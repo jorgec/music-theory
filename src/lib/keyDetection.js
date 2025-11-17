@@ -97,7 +97,8 @@ function findDiatonicKeys(chordProgression) {
       const result = analyzeKeyMatch(chordProgression, root, scaleName);
 
       // Accept if all chords are either diatonic OR functionally chromatic
-      if (result && result.functionalPercentage >= 90) {
+      // FIX: functionalPercentage is in result.fitness, not result directly
+      if (result && result.fitness.functionalPercentage >= 90) {
         possibilities.push(result);
       }
     }
@@ -114,7 +115,8 @@ function findModalKeys(chordProgression) {
     for (const scaleName of modalScales) {
       const result = analyzeKeyMatch(chordProgression, root, scaleName);
 
-      if (result && result.functionalPercentage >= 75) {
+      // FIX: functionalPercentage is in result.fitness
+      if (result && result.fitness.functionalPercentage >= 75) {
         possibilities.push(result);
       }
     }
@@ -134,7 +136,8 @@ function findJazzKeys(chordProgression) {
     for (const scaleName of jazzScales) {
       const result = analyzeKeyMatch(chordProgression, root, scaleName);
 
-      if (result && result.functionalPercentage >= 70) {
+      // FIX: functionalPercentage is in result.fitness
+      if (result && result.fitness.functionalPercentage >= 70) {
         possibilities.push(result);
       }
     }
@@ -546,8 +549,8 @@ function calculateConfidence(params) {
 
   let score = 0;
 
-  // Functional percentage (diatonic + functional chromatic) - 50 points
-  score += (functionalPercentage / 100) * 50;
+  // Functional percentage (diatonic + functional chromatic) - 40 points
+  score += (functionalPercentage / 100) * 40;
 
   // Diatonic percentage - 20 points
   score += (diatonicPercentage / 100) * 20;
@@ -559,17 +562,29 @@ function calculateConfidence(params) {
   else if (priority === 3) score += 7;
   else score += 3;
 
-  // Common progression pattern - 10 points
-  if (progressionPattern) score += 10;
+  // Common progression pattern - MORE WEIGHT (15 points)
+  // Strong patterns like I-vi-IV-V, ii-V-I should be heavily weighted
+  if (progressionPattern) {
+    if (progressionPattern.includes('I-vi-IV-V') ||
+        progressionPattern.includes('I-V-vi-IV') ||
+        progressionPattern.includes('ii-V-I')) {
+      score += 15;  // Strong, well-known patterns
+    } else {
+      score += 10;  // Other patterns
+    }
+  }
 
   // Cadence - 5 points
   if (hasCadence) score += 5;
 
-  // Tonic present - 5 points
-  if (hasTonicResolution) score += 5;
+  // Tonic starts the progression - BONUS (5 points)
+  // First chord being I is a strong indicator
+  const firstChordIsTonic = chordAnalyses.length > 0 && chordAnalyses[0].degree === 1;
+  if (firstChordIsTonic && hasTonicResolution) score += 5;
+  else if (hasTonicResolution) score += 3;
 
   // Bonus for 100% functional
-  if (functionalPercentage === 100) score += 10;
+  if (functionalPercentage === 100) score += 5;
 
   return Math.min(100, score);
 }
