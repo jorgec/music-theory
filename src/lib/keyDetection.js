@@ -14,19 +14,19 @@ import { NOTES, SCALES } from './musicData.js';
 const SCALE_PRIORITY = {
   'major': 1,
   'natural_minor': 1,
-  'harmonic_minor': 1,
-  'melodic_minor': 1,
-  'dorian': 2,
-  'mixolydian': 2,
-  'phrygian': 2,
-  'lydian': 2,
-  'aeolian': 2,
-  'locrian': 2,
-  'bebop_major': 3,
-  'bebop_dominant': 3,
-  'bebop_minor': 3,
-  'lydian_dominant': 3,
-  'altered': 3,
+  'harmonic_minor': 2,
+  'melodic_minor': 3,
+  'dorian': 4,
+  'mixolydian': 4,
+  'phrygian': 4,
+  'lydian': 4,
+  'aeolian': 4,
+  'locrian': 4,
+  'bebop_major': 5,
+  'bebop_dominant': 5,
+  'bebop_minor': 5,
+  'lydian_dominant': 5,
+  'altered': 5,
   'chromatic': 999,
   'augmented': 999
 };
@@ -59,12 +59,27 @@ const EXPECTED_QUALITIES = {
     5: ['major', '7', 'dominant7'],
     6: ['major', 'maj7'],
     7: ['diminished', 'dim7']
+  },
+  'melodic_minor': {
+    1: ['minor', 'm7', 'mmaj7', 'minmaj7'],  // i or imaj7
+    2: ['minor', 'm7'],                       // ii
+    3: ['augmented', 'aug', 'maj7'],          // III+ or bIIImaj7
+    4: ['major', '7', 'dominant7'],           // IV7
+    5: ['major', '7', 'dominant7'],           // V7
+    6: ['diminished', 'dim7', 'm7b5'],        // vi° or vim7b5
+    7: ['diminished', 'dim7', 'm7b5']         // vii° or viim7b5
   }
 };
 
 export function detectKeys(chordProgression) {
   if (!chordProgression || chordProgression.length === 0) {
     return [];
+  }
+
+  // Check if this is a blues progression first
+  const bluesKey = detectBluesProgression(chordProgression);
+  if (bluesKey) {
+    return [bluesKey];
   }
 
   // Try diatonic keys first
@@ -144,6 +159,116 @@ function findJazzKeys(chordProgression) {
   }
 
   return possibilities.sort((a, b) => b.confidence - a.confidence);
+}
+
+/**
+ * Detect blues progression - All/mostly dominant 7 chords
+ * Blues uses I7-IV7-V7 but is still in a major key
+ */
+function detectBluesProgression(chordProgression) {
+  const parsedChords = chordProgression.filter(c => c.parsed);
+  if (parsedChords.length < 3) return null;
+
+  // Count dominant 7 chords (7 but not maj7, m7, dim7, etc.)
+  const dominant7Chords = parsedChords.filter(c => {
+    const quality = c.parsed.quality.toLowerCase();
+    // Dominant 7 chords: "7", "dominant7", "9", "11", "13" etc.
+    // Exclude: "maj7", "m7", "dim7", "mmaj7", "half_diminished", etc.
+    return (quality.includes('7') &&
+            !quality.includes('maj') &&
+            !quality.includes('m7') &&
+            !quality.includes('min7') &&  // Exclude min7
+            !quality.includes('minor') &&
+            !quality.includes('dim') &&
+            !quality.includes('half') &&
+            !quality.includes('ø'));
+  });
+
+  const dominant7Percentage = (dominant7Chords.length / parsedChords.length) * 100;
+
+  // If 75%+ of chords are dominant 7, likely blues
+  if (dominant7Percentage >= 75) {
+    // Find most common root - that's likely the key
+    const rootCounts = {};
+    parsedChords.forEach(c => {
+      const root = normalizeNote(c.parsed.root);
+      rootCounts[root] = (rootCounts[root] || 0) + 1;
+    });
+
+    const mostCommonRoot = Object.keys(rootCounts).reduce((a, b) =>
+      rootCounts[a] > rootCounts[b] ? a : b
+    );
+
+    // Check if we have I7, IV7, V7 pattern typical of blues
+    const bluesRoots = parsedChords.map(c => normalizeNote(c.parsed.root));
+    const keyRootIndex = NOTES.indexOf(mostCommonRoot);
+    const fourth = NOTES[(keyRootIndex + 5) % 12];
+    const fifth = NOTES[(keyRootIndex + 7) % 12];
+
+    const hasI = bluesRoots.includes(mostCommonRoot);
+    const hasIV = bluesRoots.includes(fourth);
+    const hasV = bluesRoots.includes(fifth);
+
+    if (hasI && hasIV && hasV) {
+      // It's a blues in major
+      const scaleNotes = SCALES['major'].map(interval => {
+        const noteIndex = (keyRootIndex + interval) % 12;
+        return NOTES[noteIndex];
+      });
+
+      return {
+        root: mostCommonRoot,
+        scale: 'major',
+        scaleNotes,
+        analysis: {
+          chords: parsedChords.map((c, i) => {
+            const root = normalizeNote(c.parsed.root);
+            const interval = getInterval(mostCommonRoot, root);
+            let degree = null;
+            let romanNumeral = '?';
+
+            if (root === mostCommonRoot) {
+              degree = 1;
+              romanNumeral = 'I7';
+            } else if (root === fourth) {
+              degree = 4;
+              romanNumeral = 'IV7';
+            } else if (root === fifth) {
+              degree = 5;
+              romanNumeral = 'V7';
+            }
+
+            return {
+              chord: c.original,
+              root: c.parsed.root,
+              quality: c.parsed.quality,
+              degree,
+              isDiatonic: true, // In blues context, these ARE diatonic
+              chromaticFunction: null,
+              romanNumeral,
+              function: degree === 1 ? 'Tonic (Blues I7)' :
+                       degree === 4 ? 'Subdominant (Blues IV7)' :
+                       degree === 5 ? 'Dominant (Blues V7)' : 'Blues chord'
+            };
+          }),
+          pattern: '12-bar blues or blues progression',
+          hasStrongCadence: true,
+          diatonicPercentage: 100,
+          functionalPercentage: 100
+        },
+        confidence: 95,
+        fitness: {
+          diatonicPercentage: 100,
+          functionalPercentage: 100,
+          totalChords: parsedChords.length,
+          diatonicChords: parsedChords.length,
+          functionalChords: parsedChords.length
+        }
+      };
+    }
+  }
+
+  return null;
 }
 
 /**
@@ -510,6 +635,8 @@ function checkQualityMatch(actualQuality, degree, scaleName) {
     expectedQualities = EXPECTED_QUALITIES['natural_minor'][degree];
   } else if (scaleName === 'harmonic_minor') {
     expectedQualities = EXPECTED_QUALITIES['harmonic_minor'][degree];
+  } else if (scaleName === 'melodic_minor') {
+    expectedQualities = EXPECTED_QUALITIES['melodic_minor'][degree];
   } else {
     return true;
   }
@@ -523,12 +650,17 @@ function checkQualityMatch(actualQuality, degree, scaleName) {
       return true;
     }
 
+    // Special case: plain major chord (no quality suffix or just 'major')
     if (expected === 'major' && !normalized.includes('minor') &&
-        !normalized.includes('dim') && !normalized.includes('aug')) {
+        !normalized.includes('dim') && !normalized.includes('aug') &&
+        (normalized === 'major' || normalized === '')) {
       return true;
     }
 
-    if (expected === 'minor' && normalized.includes('m')) {
+    // Special case: minor chord - be careful not to match 'maj'
+    if (expected === 'minor' &&
+        (normalized.startsWith('m') || normalized.startsWith('min')) &&
+        !normalized.includes('maj')) {
       return true;
     }
   }
@@ -549,39 +681,53 @@ function calculateConfidence(params) {
 
   let score = 0;
 
-  // Functional percentage (diatonic + functional chromatic) - 40 points
-  score += (functionalPercentage / 100) * 40;
+  // Functional percentage (diatonic + functional chromatic) - 35 points
+  score += (functionalPercentage / 100) * 35;
 
-  // Diatonic percentage - 20 points
-  score += (diatonicPercentage / 100) * 20;
+  // Diatonic percentage - 25 points
+  score += (diatonicPercentage / 100) * 25;
 
-  // Scale priority - 15 points
-  const priority = SCALE_PRIORITY[scaleName] || 4;
-  if (priority === 1) score += 15;
-  else if (priority === 2) score += 10;
-  else if (priority === 3) score += 7;
-  else score += 3;
+  // BIG BONUS for 100% diatonic - prefer simple explanations (10 points)
+  if (diatonicPercentage === 100) {
+    score += 10;
+  }
 
-  // Common progression pattern - MORE WEIGHT (15 points)
+  // Scale priority - MORE WEIGHT (20 points)
+  // Heavily prioritize natural major/minor over melodic minor
+  const priority = SCALE_PRIORITY[scaleName] || 5;
+  if (priority === 1) score += 20;      // Natural major/minor
+  else if (priority === 2) score += 15; // Harmonic minor
+  else if (priority === 3) score += 10; // Melodic minor
+  else if (priority === 4) score += 7;  // Modes
+  else if (priority === 5) score += 4;  // Jazz scales
+  else score += 2;
+
+  // Common progression pattern - STRONG WEIGHT (10 points)
   // Strong patterns like I-vi-IV-V, ii-V-I should be heavily weighted
   if (progressionPattern) {
     if (progressionPattern.includes('I-vi-IV-V') ||
         progressionPattern.includes('I-V-vi-IV') ||
         progressionPattern.includes('ii-V-I')) {
-      score += 15;  // Strong, well-known patterns
+      score += 10;  // Strong, well-known patterns
+    } else if (progressionPattern.includes('secondary_dominant')) {
+      score += 7;   // Functional chromaticism
     } else {
-      score += 10;  // Other patterns
+      score += 5;   // Other patterns
     }
   }
 
   // Cadence - 5 points
   if (hasCadence) score += 5;
 
-  // Tonic starts the progression - BONUS (5 points)
-  // First chord being I is a strong indicator
+  // First chord is tonic - CRITICAL INDICATOR (15 points)
+  // First chord being I is a VERY strong indicator of key
   const firstChordIsTonic = chordAnalyses.length > 0 && chordAnalyses[0].degree === 1;
-  if (firstChordIsTonic && hasTonicResolution) score += 5;
-  else if (hasTonicResolution) score += 3;
+  if (firstChordIsTonic) {
+    score += 15; // VERY strong indicator - most progressions start on I
+    if (hasTonicResolution) score += 5; // Even stronger
+  } else if (hasTonicResolution) {
+    score += 3;
+  }
 
   // Bonus for 100% functional
   if (functionalPercentage === 100) score += 5;
@@ -594,6 +740,11 @@ function detectProgressionPattern(analysis) {
 
   const degrees = analysis.map(a => a.degree).filter(d => d !== null);
   const pattern = degrees.join('-');
+
+  // Rhythm Changes - I-vi-ii-V or variations
+  if (pattern.includes('1-6-2-5')) {
+    return 'I-vi-ii-V (Rhythm Changes / Jazz standard)';
+  }
 
   // Common patterns
   if (pattern.includes('1-5-6-4')) return 'I-V-vi-IV (Pop/Rock progression)';

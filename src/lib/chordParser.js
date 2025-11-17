@@ -65,11 +65,11 @@ function parseQualityAndExtensions(str) {
     };
   }
 
-  // Detect minor
-  const isMinor = /^(m|min|minor|-)/i.test(str);
+  // Detect minor (but NOT maj!)
+  const isMinor = /^(min|minor|m(?!aj)|-)/i.test(str);
   if (isMinor) {
     quality = 'minor';
-    str = str.replace(/^(m|min|minor|-)/i, '');
+    str = str.replace(/^(min|minor|m(?!aj)|-)/i, '');
   }
 
   // Detect augmented
