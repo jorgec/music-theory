@@ -131,7 +131,10 @@
                 >
                   <div class="font-semibold">{describeKey(key)}</div>
                   <div class="text-xs mt-1 opacity-80">
-                    {key.confidence.toFixed(0)}% confidence | {key.fitness.diatonicPercentage.toFixed(0)}% diatonic
+                    {key.confidence.toFixed(0)}% confidence
+                  </div>
+                  <div class="text-xs opacity-70">
+                    {key.fitness.functionalPercentage.toFixed(0)}% functional | {key.fitness.diatonicPercentage.toFixed(0)}% diatonic
                   </div>
                 </button>
               {/each}
@@ -162,15 +165,29 @@
 
             <!-- Roman Numeral Analysis -->
             <div class="mt-4 bg-music-dark/50 rounded p-4">
-              <h3 class="font-semibold mb-2">Roman Numeral Analysis</h3>
+              <h3 class="font-semibold mb-2">Harmonic Function Analysis</h3>
               <div class="flex flex-wrap gap-3">
                 {#each currentKey.analysis.chords as chord}
-                  <div class="bg-music-bright/20 px-3 py-2 rounded">
+                  <div class="px-3 py-2 rounded {chord.isDiatonic ? 'bg-music-bright/20' : 'bg-yellow-600/20 border border-yellow-600/50'}">
                     <div class="font-bold text-lg">{chord.romanNumeral}</div>
                     <div class="text-xs text-gray-300">{chord.chord}</div>
                     <div class="text-xs text-gray-400">{chord.function}</div>
+                    {#if chord.chromaticFunction}
+                      <div class="text-xs text-yellow-300 mt-1">
+                        {chord.chromaticFunction.type.replace(/_/g, ' ')}
+                      </div>
+                      {#if chord.chromaticFunction.resolves_to}
+                        <div class="text-xs text-gray-500">
+                          → {chord.chromaticFunction.resolves_to}
+                        </div>
+                      {/if}
+                    {/if}
                   </div>
                 {/each}
+              </div>
+              <div class="mt-3 text-sm text-gray-400">
+                <span class="inline-block bg-music-bright/20 px-2 py-1 rounded mr-2">Diatonic</span>
+                <span class="inline-block bg-yellow-600/20 border border-yellow-600/50 px-2 py-1 rounded">Functional Chromatic</span>
               </div>
             </div>
           {/if}
