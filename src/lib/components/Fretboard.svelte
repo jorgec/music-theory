@@ -2,6 +2,7 @@
   import { NOTES, GUITAR_TUNING } from '../musicData.js';
 
   export let highlightNotes = [];
+  export let chordTones = { all: [], root: null, third: null, fifth: null, seventh: null, ninth: null };
   export let scale = null;
   export let compact = false;
 
@@ -20,14 +21,22 @@
     return highlightNotes.some(hn => normalizeNote(hn) === normalizedNote);
   }
 
-  function isRoot(note) {
-    if (!highlightNotes || highlightNotes.length === 0) return false;
+  function getChordToneType(note) {
+    if (!chordTones || !chordTones.all || chordTones.all.length === 0) return null;
+
     const normalizedNote = normalizeNote(note);
-    const rootNote = normalizeNote(highlightNotes[0]);
-    return normalizedNote === rootNote;
+
+    if (chordTones.root && normalizeNote(chordTones.root) === normalizedNote) return 'root';
+    if (chordTones.third && normalizeNote(chordTones.third) === normalizedNote) return 'third';
+    if (chordTones.fifth && normalizeNote(chordTones.fifth) === normalizedNote) return 'fifth';
+    if (chordTones.seventh && normalizeNote(chordTones.seventh) === normalizedNote) return 'seventh';
+    if (chordTones.ninth && normalizeNote(chordTones.ninth) === normalizedNote) return 'ninth';
+
+    return null;
   }
 
   function normalizeNote(note) {
+    if (!note) return '';
     const map = { 'Db': 'C#', 'Eb': 'D#', 'Gb': 'F#', 'Ab': 'G#', 'Bb': 'A#' };
     return map[note] || note;
   }
@@ -43,7 +52,7 @@
 
 <div class="fretboard-container">
   {#if scale}
-    <div class="scale-info mb-2 text-sm text-gray-300">
+    <div class="scale-info mb-2 text-xs text-gray-300">
       {scale}
     </div>
   {/if}
@@ -69,11 +78,18 @@
           {#each Array(numFrets + 1) as _, fret}
             {@const note = getNoteAtFret(string, fret)}
             {@const highlighted = shouldHighlight(note)}
-            {@const root = isRoot(note)}
+            {@const chordToneType = getChordToneType(note)}
 
             <div class="fret" class:fret-0={fret === 0}>
               {#if highlighted}
-                <div class="note" class:root={root}>
+                <div class="note"
+                     class:root={chordToneType === 'root'}
+                     class:third={chordToneType === 'third'}
+                     class:fifth={chordToneType === 'fifth'}
+                     class:seventh={chordToneType === 'seventh'}
+                     class:ninth={chordToneType === 'ninth'}
+                     class:scale-note={!chordToneType}
+                     title={chordToneType ? chordToneType : 'scale note'}>
                   {note}
                 </div>
               {/if}
@@ -91,12 +107,44 @@
       {#each Array(numFrets + 1) as _, fret}
         <div class="fret-number">
           {#if fret > 0 && fret % 2 === 1}
-            <span>{fret}</span>
+            <span class="text-xs">{fret}</span>
           {/if}
         </div>
       {/each}
     </div>
   </div>
+
+  <!-- Legend -->
+  {#if chordTones && chordTones.all && chordTones.all.length > 0}
+    <div class="legend mt-2 flex flex-wrap gap-2 text-xs">
+      <span class="flex items-center gap-1">
+        <div class="note-sample root"></div> Root
+      </span>
+      {#if chordTones.third}
+        <span class="flex items-center gap-1">
+          <div class="note-sample third"></div> 3rd
+        </span>
+      {/if}
+      {#if chordTones.fifth}
+        <span class="flex items-center gap-1">
+          <div class="note-sample fifth"></div> 5th
+        </span>
+      {/if}
+      {#if chordTones.seventh}
+        <span class="flex items-center gap-1">
+          <div class="note-sample seventh"></div> 7th
+        </span>
+      {/if}
+      {#if chordTones.ninth}
+        <span class="flex items-center gap-1">
+          <div class="note-sample ninth"></div> 9th
+        </span>
+      {/if}
+      <span class="flex items-center gap-1">
+        <div class="note-sample scale-note"></div> Scale
+      </span>
+    </div>
+  {/if}
 </div>
 
 <style>
@@ -104,7 +152,7 @@
     width: 100%;
     overflow-x: auto;
     background: #1a1a2e;
-    padding: 1rem;
+    padding: 0.75rem;
     border-radius: 0.5rem;
   }
 
@@ -116,7 +164,7 @@
 
   .fretboard {
     position: relative;
-    min-width: 800px;
+    min-width: 700px;
   }
 
   .fret-markers {
@@ -130,18 +178,18 @@
     display: flex;
     justify-content: center;
     align-items: center;
-    height: 1.5rem;
+    height: 1rem;
   }
 
   .marker {
-    width: 8px;
-    height: 8px;
+    width: 6px;
+    height: 6px;
     background: #444;
     border-radius: 50%;
   }
 
   .marker.double {
-    box-shadow: -6px 0 0 #444, 6px 0 0 #444;
+    box-shadow: -5px 0 0 #444, 5px 0 0 #444;
   }
 
   .strings {
@@ -151,8 +199,8 @@
   .string {
     display: flex;
     position: relative;
-    height: 2.5rem;
-    margin-bottom: 0.25rem;
+    height: 2rem;
+    margin-bottom: 0.2rem;
   }
 
   .string::before {
@@ -190,31 +238,64 @@
     right: 0;
     top: -0.5rem;
     bottom: -0.5rem;
-    width: 3px;
+    width: 2px;
     background: linear-gradient(to right, #999, #bbb, #999);
     z-index: 1;
   }
 
   .note {
-    width: 1.75rem;
-    height: 1.75rem;
+    width: 1.5rem;
+    height: 1.5rem;
     border-radius: 50%;
-    background: #e94560;
     color: white;
     display: flex;
     justify-content: center;
     align-items: center;
-    font-size: 0.7rem;
+    font-size: 0.65rem;
     font-weight: 600;
     z-index: 2;
     box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
   }
 
+  /* Chord tone colors */
   .note.root {
     background: #ffd700;
     color: #1a1a2e;
     border: 2px solid #ffed4e;
     font-weight: 700;
+  }
+
+  .note.third {
+    background: #4ade80;
+    color: #1a1a2e;
+    border: 2px solid #22c55e;
+    font-weight: 700;
+  }
+
+  .note.fifth {
+    background: #60a5fa;
+    color: white;
+    border: 2px solid #3b82f6;
+    font-weight: 700;
+  }
+
+  .note.seventh {
+    background: #c084fc;
+    color: white;
+    border: 2px solid #a855f7;
+    font-weight: 700;
+  }
+
+  .note.ninth {
+    background: #fb923c;
+    color: white;
+    border: 2px solid #f97316;
+    font-weight: 700;
+  }
+
+  .note.scale-note {
+    background: #e94560;
+    color: white;
   }
 
   .fret-numbers {
@@ -226,11 +307,53 @@
   .fret-number {
     flex: 1;
     text-align: center;
-    font-size: 0.75rem;
+    font-size: 0.65rem;
     color: #888;
   }
 
   .fret-number:first-child {
     flex: 0.5;
+  }
+
+  .legend {
+    padding-top: 0.5rem;
+    border-top: 1px solid #444;
+    color: #aaa;
+  }
+
+  .note-sample {
+    width: 1rem;
+    height: 1rem;
+    border-radius: 50%;
+    display: inline-block;
+  }
+
+  .note-sample.root {
+    background: #ffd700;
+    border: 1px solid #ffed4e;
+  }
+
+  .note-sample.third {
+    background: #4ade80;
+    border: 1px solid #22c55e;
+  }
+
+  .note-sample.fifth {
+    background: #60a5fa;
+    border: 1px solid #3b82f6;
+  }
+
+  .note-sample.seventh {
+    background: #c084fc;
+    border: 1px solid #a855f7;
+  }
+
+  .note-sample.ninth {
+    background: #fb923c;
+    border: 1px solid #f97316;
+  }
+
+  .note-sample.scale-note {
+    background: #e94560;
   }
 </style>
