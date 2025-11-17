@@ -1,100 +1,196 @@
-import { NOTES, FLAT_NOTES, SCALES, CHORD_QUALITIES } from './musicData.js';
+import { NOTES, FLAT_NOTES, SCALES } from './musicData.js';
 import { getChordNotes } from './chordParser.js';
 
 /**
- * Detects possible keys/tonics for a chord progression
- * Exhaustively checks all major modes, minor modes, jazz scales, bebop scales, and exotic scales
+ * PROPER KEY DETECTION ALGORITHM
+ *
+ * Music Theory Principles:
+ * 1. A progression is in a diatonic key when ALL chords are built from that key's scale
+ * 2. Chord QUALITY must match the expected quality for that scale degree
+ * 3. Major/minor keys are prioritized over modes and exotic scales
+ * 4. Functional harmony (I-IV-V, ii-V-I, etc.) increases confidence
+ * 5. Only consider non-diatonic keys if no diatonic key fits
+ */
+
+// Define priority tiers for scales
+const SCALE_PRIORITY = {
+  // Tier 1: Primary diatonic keys
+  'major': 1,
+  'natural_minor': 1,
+  'harmonic_minor': 1,
+  'melodic_minor': 1,
+
+  // Tier 2: Common modes
+  'dorian': 2,
+  'mixolydian': 2,
+  'phrygian': 2,
+  'lydian': 2,
+  'aeolian': 2,
+
+  // Tier 3: Jazz scales
+  'bebop_major': 3,
+  'bebop_dominant': 3,
+  'bebop_minor': 3,
+  'lydian_dominant': 3,
+  'altered': 3,
+
+  // Tier 4: Exotic scales (only if nothing else fits)
+  'whole_tone': 4,
+  'diminished_whole_half': 4,
+  'diminished_half_whole': 4,
+
+  // Never use these as key centers
+  'chromatic': 999,
+  'augmented': 999
+};
+
+/**
+ * Get expected chord quality for each scale degree in major and minor keys
+ */
+const EXPECTED_QUALITIES = {
+  'major': {
+    1: ['major', 'maj7', '6', 'maj9', 'maj13', 'add9'],
+    2: ['minor', 'm7', 'm9', 'm11'],
+    3: ['minor', 'm7', 'm9'],
+    4: ['major', 'maj7', '6'],
+    5: ['major', '7', 'dominant7', '9', '13'],  // Can be major or dominant
+    6: ['minor', 'm7', 'm9'],
+    7: ['diminished', 'dim7', 'm7b5', 'half_diminished']
+  },
+  'natural_minor': {
+    1: ['minor', 'm7', 'm9', 'm11'],
+    2: ['diminished', 'dim7', 'm7b5'],
+    3: ['major', 'maj7', '6'],
+    4: ['minor', 'm7', 'm9'],
+    5: ['minor', 'm7', 'm9'],  // Natural minor has minor v
+    6: ['major', 'maj7', '6'],
+    7: ['major', '7', 'dominant7']
+  },
+  'harmonic_minor': {
+    1: ['minor', 'm7', 'mmaj7', 'minmaj7'],
+    2: ['diminished', 'dim7', 'm7b5'],
+    3: ['augmented', 'aug', 'maj7'],
+    4: ['minor', 'm7'],
+    5: ['major', '7', 'dominant7'],  // Dominant V in harmonic minor
+    6: ['major', 'maj7'],
+    7: ['diminished', 'dim7']
+  }
+};
+
+/**
+ * Detects possible keys with PROPER music theory
  */
 export function detectKeys(chordProgression) {
   if (!chordProgression || chordProgression.length === 0) {
     return [];
   }
 
-  // Collect all unique notes from all chords
-  const allNotes = new Set();
-  chordProgression.forEach(chord => {
-    if (chord.notes) {
-      chord.notes.forEach(note => allNotes.add(normalizeNote(note)));
-    }
-  });
+  // First, try to find diatonic keys (Tier 1 only)
+  const diatonicKeys = findDiatonicKeys(chordProgression);
 
-  const noteArray = Array.from(allNotes);
+  // If we found strong diatonic matches, only return those
+  if (diatonicKeys.length > 0 && diatonicKeys[0].confidence >= 80) {
+    return diatonicKeys;
+  }
 
-  // Test every root and every scale
+  // If no strong diatonic match, expand to modes (Tier 2)
+  const modalKeys = findModalKeys(chordProgression);
+
+  if (modalKeys.length > 0 && modalKeys[0].confidence >= 70) {
+    return [...diatonicKeys, ...modalKeys].sort((a, b) => b.confidence - a.confidence);
+  }
+
+  // If still no good match, try jazz scales (Tier 3)
+  const jazzKeys = findJazzKeys(chordProgression);
+
+  // Return all possibilities, sorted by confidence
+  return [...diatonicKeys, ...modalKeys, ...jazzKeys]
+    .sort((a, b) => b.confidence - a.confidence);
+}
+
+/**
+ * Find diatonic major/minor keys (highest priority)
+ */
+function findDiatonicKeys(chordProgression) {
   const possibilities = [];
+  const diatonicScales = ['major', 'natural_minor', 'harmonic_minor', 'melodic_minor'];
 
   for (const root of NOTES) {
-    for (const [scaleName, intervals] of Object.entries(SCALES)) {
-      const scaleNotes = intervals.map(interval => {
-        const noteIndex = (NOTES.indexOf(root) + interval) % 12;
-        return NOTES[noteIndex];
-      });
+    for (const scaleName of diatonicScales) {
+      const result = analyzeKeyMatch(chordProgression, root, scaleName);
 
-      // Check if all chord notes fit in this scale
-      const fitness = calculateScaleFitness(noteArray, scaleNotes);
-
-      if (fitness.matchPercentage >= 70) { // At least 70% match
-        // Analyze the progression to determine which scale degree each chord is
-        const analysis = analyzeProgressionInKey(chordProgression, root, scaleName, scaleNotes);
-
-        possibilities.push({
-          root,
-          scale: scaleName,
-          scaleNotes,
-          fitness,
-          analysis,
-          confidence: calculateConfidence(fitness, analysis)
-        });
+      // Only include if ALL chords are diatonic
+      if (result && result.diatonicPercentage === 100) {
+        possibilities.push(result);
       }
     }
   }
 
-  // Sort by confidence
-  possibilities.sort((a, b) => b.confidence - a.confidence);
-
-  return possibilities;
+  return possibilities.sort((a, b) => b.confidence - a.confidence);
 }
 
 /**
- * Normalize note name (convert flats to sharps for comparison)
+ * Find modal keys (medium priority)
  */
-function normalizeNote(note) {
-  const noteMap = {
-    'Db': 'C#', 'Eb': 'D#', 'Gb': 'F#', 'Ab': 'G#', 'Bb': 'A#'
-  };
-  return noteMap[note] || note;
-}
+function findModalKeys(chordProgression) {
+  const possibilities = [];
+  const modalScales = ['dorian', 'phrygian', 'lydian', 'mixolydian', 'aeolian', 'locrian'];
 
-/**
- * Calculate how well the notes fit in a scale
- */
-function calculateScaleFitness(notes, scaleNotes) {
-  const normalizedScale = scaleNotes.map(normalizeNote);
+  for (const root of NOTES) {
+    for (const scaleName of modalScales) {
+      const result = analyzeKeyMatch(chordProgression, root, scaleName);
 
-  let matches = 0;
-  let total = notes.length;
-
-  notes.forEach(note => {
-    if (normalizedScale.includes(normalizeNote(note))) {
-      matches++;
+      // Require at least 75% diatonic for modes
+      if (result && result.diatonicPercentage >= 75) {
+        possibilities.push(result);
+      }
     }
+  }
+
+  return possibilities.sort((a, b) => b.confidence - a.confidence);
+}
+
+/**
+ * Find jazz/exotic keys (lowest priority)
+ */
+function findJazzKeys(chordProgression) {
+  const possibilities = [];
+  const jazzScales = Object.keys(SCALES).filter(scale => {
+    const priority = SCALE_PRIORITY[scale] || 4;
+    return priority === 3 || priority === 4;
+  }).filter(scale => !['chromatic', 'augmented'].includes(scale));
+
+  for (const root of NOTES) {
+    for (const scaleName of jazzScales) {
+      const result = analyzeKeyMatch(chordProgression, root, scaleName);
+
+      // Require at least 70% diatonic for jazz scales
+      if (result && result.diatonicPercentage >= 70) {
+        possibilities.push(result);
+      }
+    }
+  }
+
+  return possibilities.sort((a, b) => b.confidence - a.confidence);
+}
+
+/**
+ * Analyze how well a progression fits a specific key
+ * This checks both NOTES and CHORD QUALITY
+ */
+function analyzeKeyMatch(progression, root, scaleName) {
+  const scaleIntervals = SCALES[scaleName];
+  if (!scaleIntervals) return null;
+
+  const scaleNotes = scaleIntervals.map(interval => {
+    const noteIndex = (NOTES.indexOf(root) + interval) % 12;
+    return NOTES[noteIndex];
   });
 
-  return {
-    matches,
-    total,
-    matchPercentage: (matches / total) * 100
-  };
-}
-
-/**
- * Analyze the progression in the context of a specific key
- */
-function analyzeProgressionInKey(progression, root, scaleName, scaleNotes) {
-  const analysis = progression.map(chord => {
+  // Analyze each chord in the progression
+  const chordAnalyses = progression.map(chord => {
     if (!chord.parsed) return null;
 
-    // Find which scale degree this chord's root is
     const chordRoot = normalizeNote(chord.parsed.root);
     const normalizedScale = scaleNotes.map(normalizeNote);
     const degreeIndex = normalizedScale.indexOf(chordRoot);
@@ -103,160 +199,152 @@ function analyzeProgressionInKey(progression, root, scaleName, scaleNotes) {
       return {
         chord: chord.original,
         degree: null,
-        function: 'Non-diatonic',
-        isChromatic: true
+        isDiatonic: false,
+        qualityMatch: false
       };
     }
 
-    const degree = degreeIndex + 1; // 1-indexed
-    const chordFunction = determineHarmonicFunction(degree, chord.parsed.quality);
-    const expectedQuality = getExpectedQuality(scaleName, degree);
-    const qualityMatch = checkQualityMatch(chord.parsed.quality, expectedQuality);
+    const degree = degreeIndex + 1;
+    const qualityMatch = checkQualityMatch(
+      chord.parsed.quality,
+      degree,
+      scaleName
+    );
 
     return {
       chord: chord.original,
+      root: chord.parsed.root,
+      quality: chord.parsed.quality,
       degree,
-      romanNumeral: toRomanNumeral(degree, chord.parsed.quality),
-      function: chordFunction,
-      expectedQuality,
-      actualQuality: chord.parsed.quality,
+      isDiatonic: qualityMatch,  // Only truly diatonic if quality matches
       qualityMatch,
-      isChromatic: false
+      romanNumeral: toRomanNumeral(degree, chord.parsed.quality)
     };
   }).filter(a => a !== null);
 
-  // Check for common progressions
-  const progressionPattern = detectProgressionPattern(analysis);
+  // Calculate metrics
+  const diatonicChords = chordAnalyses.filter(a => a.isDiatonic);
+  const diatonicPercentage = (diatonicChords.length / chordAnalyses.length) * 100;
+
+  // Don't consider this key if diatonic percentage is too low
+  if (diatonicPercentage < 50) return null;
+
+  // Detect common progressions
+  const progressionPattern = detectProgressionPattern(chordAnalyses);
+  const hasCadence = detectCadence(chordAnalyses);
+  const hasTonicResolution = chordAnalyses.some(a => a.degree === 1);
+
+  // Calculate confidence based on proper music theory
+  const confidence = calculateConfidence({
+    diatonicPercentage,
+    scaleName,
+    progressionPattern,
+    hasCadence,
+    hasTonicResolution,
+    chordAnalyses
+  });
 
   return {
-    chords: analysis,
-    pattern: progressionPattern,
-    hasStrongCadence: detectCadence(analysis),
-    diatonicPercentage: (analysis.filter(a => !a.isChromatic).length / analysis.length) * 100
+    root,
+    scale: scaleName,
+    scaleNotes,
+    analysis: {
+      chords: chordAnalyses,
+      pattern: progressionPattern,
+      hasStrongCadence: hasCadence,
+      diatonicPercentage
+    },
+    confidence,
+    fitness: {
+      diatonicPercentage,
+      totalChords: chordAnalyses.length,
+      diatonicChords: diatonicChords.length
+    }
   };
 }
 
 /**
- * Determine harmonic function of a chord
+ * Check if chord quality matches expected quality for scale degree
+ * THIS IS THE KEY FUNCTION - checks quality, not just notes
  */
-function determineHarmonicFunction(degree, quality) {
-  // Tonic function
-  if ([1, 3, 6].includes(degree)) {
-    return 'Tonic';
-  }
+function checkQualityMatch(actualQuality, degree, scaleName) {
+  // Get expected qualities for this scale
+  let expectedQualities = null;
 
-  // Dominant function
-  if ([5, 7].includes(degree)) {
-    if (quality.includes('7') || quality.includes('dominant')) {
-      return 'Dominant (Strong)';
-    }
-    return 'Dominant';
-  }
-
-  // Subdominant function
-  if ([2, 4].includes(degree)) {
-    return 'Subdominant';
-  }
-
-  return 'Other';
-}
-
-/**
- * Get expected chord quality for a scale degree in a given scale
- */
-function getExpectedQuality(scaleName, degree) {
-  // Major scales and modes
-  if (['major', 'ionian'].includes(scaleName)) {
-    const qualities = ['major', 'minor', 'minor', 'major', 'major', 'minor', 'diminished'];
-    return qualities[degree - 1] || 'unknown';
-  }
-
-  if (scaleName === 'dorian') {
-    const qualities = ['minor', 'minor', 'major', 'major', 'minor', 'diminished', 'major'];
-    return qualities[degree - 1] || 'unknown';
-  }
-
-  if (scaleName === 'phrygian') {
-    const qualities = ['minor', 'major', 'major', 'minor', 'diminished', 'major', 'minor'];
-    return qualities[degree - 1] || 'unknown';
-  }
-
-  if (scaleName === 'lydian') {
-    const qualities = ['major', 'major', 'minor', 'diminished', 'major', 'minor', 'minor'];
-    return qualities[degree - 1] || 'unknown';
-  }
-
-  if (scaleName === 'mixolydian') {
-    const qualities = ['major', 'minor', 'diminished', 'major', 'minor', 'minor', 'major'];
-    return qualities[degree - 1] || 'unknown';
-  }
-
-  if (['aeolian', 'natural_minor'].includes(scaleName)) {
-    const qualities = ['minor', 'diminished', 'major', 'minor', 'minor', 'major', 'major'];
-    return qualities[degree - 1] || 'unknown';
-  }
-
-  if (scaleName === 'locrian') {
-    const qualities = ['diminished', 'major', 'minor', 'minor', 'major', 'major', 'minor'];
-    return qualities[degree - 1] || 'unknown';
-  }
-
-  if (scaleName === 'harmonic_minor') {
-    const qualities = ['minor', 'diminished', 'augmented', 'minor', 'major', 'major', 'diminished'];
-    return qualities[degree - 1] || 'unknown';
-  }
-
-  if (scaleName === 'melodic_minor') {
-    const qualities = ['minor', 'minor', 'augmented', 'major', 'major', 'diminished', 'diminished'];
-    return qualities[degree - 1] || 'unknown';
-  }
-
-  return 'any';
-}
-
-/**
- * Check if chord quality matches expected
- */
-function checkQualityMatch(actual, expected) {
-  if (expected === 'any') return true;
-
-  // Normalize qualities for comparison
-  const normalizedActual = actual.toLowerCase();
-  const normalizedExpected = expected.toLowerCase();
-
-  // Extensions don't change the basic quality
-  if (normalizedActual.includes(normalizedExpected)) return true;
-  if (normalizedExpected === 'major' && !normalizedActual.includes('minor') && !normalizedActual.includes('dim') && !normalizedActual.includes('aug')) {
+  if (scaleName === 'major' || scaleName === 'ionian') {
+    expectedQualities = EXPECTED_QUALITIES['major'][degree];
+  } else if (scaleName === 'natural_minor' || scaleName === 'aeolian') {
+    expectedQualities = EXPECTED_QUALITIES['natural_minor'][degree];
+  } else if (scaleName === 'harmonic_minor') {
+    expectedQualities = EXPECTED_QUALITIES['harmonic_minor'][degree];
+  } else {
+    // For other scales, use a more lenient check
     return true;
+  }
+
+  if (!expectedQualities) return false;
+
+  // Normalize quality for comparison
+  const normalized = actualQuality.toLowerCase();
+
+  // Check if actual quality matches any expected quality
+  for (const expected of expectedQualities) {
+    if (normalized.includes(expected.toLowerCase())) {
+      return true;
+    }
+
+    // Special cases
+    if (expected === 'major' && !normalized.includes('minor') &&
+        !normalized.includes('dim') && !normalized.includes('aug')) {
+      return true;
+    }
+
+    if (expected === 'minor' && normalized.includes('m')) {
+      return true;
+    }
   }
 
   return false;
 }
 
 /**
- * Convert scale degree to Roman numeral
+ * Calculate confidence with proper weighting
  */
-function toRomanNumeral(degree, quality) {
-  const numerals = ['I', 'II', 'III', 'IV', 'V', 'VI', 'VII'];
-  let numeral = numerals[degree - 1] || '?';
+function calculateConfidence(params) {
+  const {
+    diatonicPercentage,
+    scaleName,
+    progressionPattern,
+    hasCadence,
+    hasTonicResolution,
+    chordAnalyses
+  } = params;
 
-  // Use lowercase for minor/diminished
-  if (quality.includes('minor') || quality.includes('diminished')) {
-    numeral = numeral.toLowerCase();
-  }
+  let score = 0;
 
-  // Add symbols for alterations
-  if (quality.includes('diminished')) {
-    numeral += '°';
-  } else if (quality.includes('augmented')) {
-    numeral += '+';
-  } else if (quality.includes('7')) {
-    numeral += '7';
-  } else if (quality.includes('9')) {
-    numeral += '9';
-  }
+  // Diatonic percentage is most important (60 points)
+  score += (diatonicPercentage / 100) * 60;
 
-  return numeral;
+  // Scale priority (20 points)
+  const priority = SCALE_PRIORITY[scaleName] || 4;
+  if (priority === 1) score += 20;
+  else if (priority === 2) score += 15;
+  else if (priority === 3) score += 10;
+  else score += 5;
+
+  // Common progression pattern (10 points)
+  if (progressionPattern) score += 10;
+
+  // Cadence (5 points)
+  if (hasCadence) score += 5;
+
+  // Tonic resolution (5 points)
+  if (hasTonicResolution) score += 5;
+
+  // Bonus for all chords being diatonic
+  if (diatonicPercentage === 100) score += 10;
+
+  return Math.min(100, score);
 }
 
 /**
@@ -267,7 +355,14 @@ function detectProgressionPattern(analysis) {
 
   const degrees = analysis.map(a => a.degree).filter(d => d !== null);
 
-  // ii-V-I
+  // I-V-vi-IV (pop progression)
+  if (degrees.length >= 4) {
+    const pattern = degrees.join('-');
+    if (pattern.includes('1-5-6-4')) return 'I-V-vi-IV (Pop Progression)';
+    if (pattern.includes('6-4-1-5')) return 'vi-IV-I-V (Pop Progression variant)';
+  }
+
+  // ii-V-I (jazz)
   if (degrees.length >= 3) {
     for (let i = 0; i <= degrees.length - 3; i++) {
       if (degrees[i] === 2 && degrees[i + 1] === 5 && degrees[i + 2] === 1) {
@@ -276,48 +371,16 @@ function detectProgressionPattern(analysis) {
     }
   }
 
-  // I-IV-V
+  // I-IV-V (blues/rock)
   if (degrees.length >= 3) {
-    for (let i = 0; i <= degrees.length - 3; i++) {
-      if (degrees[i] === 1 && degrees[i + 1] === 4 && degrees[i + 2] === 5) {
-        return 'I-IV-V (Blues/Rock)';
-      }
-    }
+    const pattern = degrees.join('-');
+    if (pattern.includes('1-4-5')) return 'I-IV-V (Blues/Rock)';
   }
 
-  // I-V-vi-IV
+  // I-vi-IV-V (50s progression)
   if (degrees.length >= 4) {
-    for (let i = 0; i <= degrees.length - 4; i++) {
-      if (degrees[i] === 1 && degrees[i + 1] === 5 && degrees[i + 2] === 6 && degrees[i + 3] === 4) {
-        return 'I-V-vi-IV (Pop Progression)';
-      }
-    }
-  }
-
-  // i-iv-v (minor blues)
-  if (degrees.length >= 3) {
-    for (let i = 0; i <= degrees.length - 3; i++) {
-      if (degrees[i] === 1 && degrees[i + 1] === 4 && degrees[i + 2] === 5) {
-        const qualities = [analysis[i].actualQuality, analysis[i + 1].actualQuality, analysis[i + 2].actualQuality];
-        if (qualities.every(q => q.includes('minor'))) {
-          return 'i-iv-v (Minor Blues)';
-        }
-      }
-    }
-  }
-
-  // Circle of fifths movement
-  let hasFifthsMovement = false;
-  for (let i = 0; i < degrees.length - 1; i++) {
-    const interval = (degrees[i + 1] - degrees[i] + 7) % 7;
-    if (interval === 4) { // Moving up a fourth (down a fifth)
-      hasFifthsMovement = true;
-      break;
-    }
-  }
-
-  if (hasFifthsMovement) {
-    return 'Circle of Fifths Movement';
+    const pattern = degrees.join('-');
+    if (pattern.includes('1-6-4-5')) return 'I-vi-IV-V (50s Progression)';
   }
 
   return null;
@@ -330,59 +393,58 @@ function detectCadence(analysis) {
   if (analysis.length < 2) return false;
 
   const lastTwo = analysis.slice(-2);
+  const degrees = lastTwo.map(a => a.degree).filter(d => d !== null);
+
+  if (degrees.length < 2) return false;
 
   // V-I (Perfect Cadence)
-  if (lastTwo[0].degree === 5 && lastTwo[1].degree === 1) {
-    return true;
-  }
+  if (degrees[0] === 5 && degrees[1] === 1) return true;
 
   // IV-I (Plagal Cadence)
-  if (lastTwo[0].degree === 4 && lastTwo[1].degree === 1) {
-    return true;
-  }
-
-  // ii-V or V-vi (Deceptive)
-  if (lastTwo[0].degree === 2 && lastTwo[1].degree === 5) {
-    return true;
-  }
+  if (degrees[0] === 4 && degrees[1] === 1) return true;
 
   return false;
 }
 
 /**
- * Calculate overall confidence score
+ * Convert to Roman numeral
  */
-function calculateConfidence(fitness, analysis) {
-  let score = 0;
+function toRomanNumeral(degree, quality) {
+  const numerals = ['I', 'II', 'III', 'IV', 'V', 'VI', 'VII'];
+  let numeral = numerals[degree - 1] || '?';
 
-  // Fitness contribution (0-50 points)
-  score += (fitness.matchPercentage / 100) * 50;
+  const normalized = quality.toLowerCase();
 
-  // Diatonic percentage (0-30 points)
-  score += (analysis.diatonicPercentage / 100) * 30;
-
-  // Pattern recognition (0-10 points)
-  if (analysis.pattern) {
-    score += 10;
+  // Use lowercase for minor/diminished
+  if (normalized.includes('minor') || normalized.includes('m7') || normalized.includes('m9')) {
+    numeral = numeral.toLowerCase();
+  } else if (normalized.includes('diminished') || normalized.includes('dim')) {
+    numeral = numeral.toLowerCase() + '°';
+  } else if (normalized.includes('augmented') || normalized.includes('aug')) {
+    numeral = numeral + '+';
   }
 
-  // Strong cadence (0-10 points)
-  if (analysis.hasStrongCadence) {
-    score += 10;
-  }
-
-  return Math.min(100, score);
+  return numeral;
 }
 
 /**
- * Determine if progression is likely atonal
+ * Normalize note
+ */
+function normalizeNote(note) {
+  const map = { 'Db': 'C#', 'Eb': 'D#', 'Gb': 'F#', 'Ab': 'G#', 'Bb': 'A#' };
+  return map[note] || note;
+}
+
+/**
+ * Determine if progression is atonal
  */
 export function isAtonal(possibilities) {
   if (possibilities.length === 0) return true;
 
-  // If no key has confidence > 50, likely atonal
   const bestMatch = possibilities[0];
-  return bestMatch.confidence < 50;
+
+  // If best match has less than 60% confidence and isn't fully diatonic, likely atonal
+  return bestMatch.confidence < 60 && bestMatch.fitness.diatonicPercentage < 100;
 }
 
 /**
@@ -391,29 +453,20 @@ export function isAtonal(possibilities) {
 export function describeKey(keyInfo) {
   if (!keyInfo) return 'Unknown';
 
-  const scaleFamilies = {
+  const scaleNames = {
     'major': 'Major',
-    'ionian': 'Major (Ionian Mode)',
-    'dorian': 'Dorian Mode',
-    'phrygian': 'Phrygian Mode',
-    'lydian': 'Lydian Mode',
-    'mixolydian': 'Mixolydian Mode',
-    'aeolian': 'Natural Minor (Aeolian Mode)',
-    'locrian': 'Locrian Mode',
-    'natural_minor': 'Natural Minor',
+    'natural_minor': 'Minor',
     'harmonic_minor': 'Harmonic Minor',
     'melodic_minor': 'Melodic Minor',
-    'bebop_major': 'Bebop Major',
-    'bebop_dominant': 'Bebop Dominant',
-    'bebop_minor': 'Bebop Minor',
-    'altered': 'Altered Scale (Super Locrian)',
-    'lydian_dominant': 'Lydian Dominant',
-    'whole_tone': 'Whole Tone',
-    'diminished_half_whole': 'Diminished (Half-Whole)',
-    'diminished_whole_half': 'Diminished (Whole-Half)'
+    'dorian': 'Dorian',
+    'phrygian': 'Phrygian',
+    'lydian': 'Lydian',
+    'mixolydian': 'Mixolydian',
+    'aeolian': 'Minor (Aeolian)',
+    'locrian': 'Locrian'
   };
 
-  const scaleDesc = scaleFamilies[keyInfo.scale] || keyInfo.scale.replace(/_/g, ' ');
+  const scaleDesc = scaleNames[keyInfo.scale] || keyInfo.scale.replace(/_/g, ' ');
 
-  return `${keyInfo.root} ${scaleDesc} (${keyInfo.confidence.toFixed(1)}% confidence)`;
+  return `${keyInfo.root} ${scaleDesc}`;
 }

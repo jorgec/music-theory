@@ -122,7 +122,7 @@
 
         {#if possibleKeys.length > 0}
           <div class="mb-4">
-            <p class="text-sm text-gray-300 mb-2">Detected {possibleKeys.length} possible key(s):</p>
+            <p class="text-sm text-gray-300 mb-2">Detected {possibleKeys.length} possible key(s) - Diatonic keys prioritized:</p>
             <div class="flex flex-wrap gap-2">
               {#each possibleKeys.slice(0, 5) as key, index}
                 <button
@@ -130,6 +130,9 @@
                   class="px-4 py-2 rounded transition {index === selectedKeyIndex ? 'bg-music-bright' : 'bg-music-dark bg-opacity-50 hover:bg-music-bright hover:bg-opacity-70'}"
                 >
                   <div class="font-semibold">{describeKey(key)}</div>
+                  <div class="text-xs mt-1 opacity-80">
+                    {key.confidence.toFixed(0)}% confidence | {key.fitness.diatonicPercentage.toFixed(0)}% diatonic
+                  </div>
                 </button>
               {/each}
             </div>
